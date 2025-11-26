@@ -1,0 +1,73 @@
+from __future__ import annotations
+from torch.nn import Module
+
+from deepinv.optim.prior import PnP
+from deepinv.optim.data_fidelity import L2
+from deepinv.models import DnCNN, Denoiser
+from deepinv.optim import BaseOptim
+from deepinv.optim.optim_iterators import HQSIteration
+
+
+class MoDL(BaseOptim):
+    """MoDL unfolded network.
+
+    The model is a simple unrolled network using half-quadratic splitting
+    where the prox is replaced by a trainable denoising prior.
+
+    This was proposed for MRI reconstruction in :footcite:t:`aggarwal2018modl`.
+
+    :param Denoiser, torch.nn.Module denoiser: backbone denoiser model. If ``None``, uses :class:`deepinv.models.DnCNN`
+    :param int num_iter: number of unfolded layers ("cascades"), defaults to 3.
+
+    """
+
+    def __init__(
+        self,
+        denoiser: Denoiser | Module = None,
+        num_iter: int = 3,
+    ):
+        # Select the data fidelity term
+        data_fidelity = L2()
+
+        # If the prior dict value is initialized with a table of length max_iter, then a distinct model is trained for each
+        # iteration. For fixed trained model prior across iterations, initialize with a single model.
+        denoiser = (
+            denoiser
+            if denoiser is not None
+            else DnCNN(
+                in_channels=2,  # real + imaginary parts
+                out_channels=2,
+                pretrained=None,
+                depth=7,
+            )
+        )
+        prior = PnP(denoiser=denoiser)
+
+        # Unrolled optimization algorithm parameters
+        lambda_reg = [1.0] * num_iter  # initialization of the regularization parameter
+        stepsize = [1.0] * num_iter  # initialization of the step sizes.
+        sigma_denoiser = [0.01] * num_iter  # initialization of the denoiser parameters
+        params_algo = (
+            {  # wrap all the restoration parameters in a 'params_algo' dictionary
+                "stepsize": stepsize,
+                "g_param": sigma_denoiser,
+                "lambda_reg": lambda_reg,
+            }
+        )
+
+        trainable_params = [
+            "lambda_reg",
+            "stepsize",
+            "g_param",
+        ]  # define which parameters from 'params_algo' are trainable
+
+        # Define the unfolded trainable model.
+        super(MoDL, self).__init__(
+            HQSIteration(),
+            max_iter=num_iter,
+            trainable_params=trainable_params,
+            data_fidelity=data_fidelity,
+            prior=prior,
+            params_algo=params_algo,
+            unfold=True,
+        )

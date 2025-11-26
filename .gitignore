@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+checkpoints/
+*.pth
+*.tar
+*.png
+*.csv
+denoising_results.csv
+realnoise_results.csv
+realnoise_comparison.png
+denoising_comparison.png
+.DS_Store
