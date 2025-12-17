@@ -8,16 +8,18 @@ import pydicom
 from PIL import Image
 
 class MRI25DDataset(Dataset):
-    def __init__(self, root_dir, transform=None, mode='train', test_split=0.1, val_split=0.1, seed=42, limit=None, shuffle=True):
+    def __init__(self, root_dir, transform=None, mode='train', test_split=0.1, val_split=0.1, seed=42, limit=None, shuffle=True, return_stats=False):
         """
         Args:
             root_dir (string): Directory with all the images.
             transform (callable, optional): Optional transform to be applied on a sample.
             mode (string): 'train', 'val', 'test', or 'all'.
+            return_stats (bool): If True, returns (stack, v_min, v_max). Else returns stack.
         """
         self.root_dir = root_dir
         self.transform = transform
         self.mode = mode
+        self.return_stats = return_stats
         self.volumes = [] # List of lists, where each inner list is a sorted list of slice paths or (path, index)
 
         # 1. Discover and Group Files
@@ -299,4 +301,7 @@ class MRI25DDataset(Dataset):
             stack_tensor = self.transform(stack_tensor)
             
         # Return stats so we can denormalize later
-        return stack_tensor, v_min, v_max
+        if self.return_stats:
+            return stack_tensor, v_min, v_max
+        else:
+            return stack_tensor
