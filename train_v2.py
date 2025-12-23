@@ -78,6 +78,20 @@ class RandomRot90:
         k = random.randint(0, 3)
         return torch.rot90(x, k, dims=[-2, -1])
 
+# --- Wrapper for Physics-aware Models ---
+class DenoiserWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+            
+    def forward(self, x, physics, **kwargs):
+        # DRUNet expects (x, sigma)
+        # We extract sigma from physics.noise_model.sigma
+        # Using the first element if it's a tensor batch, or just the value?
+        # DRUNet logic: if sigma is tensor, it uses it.
+        # Physics.noise_model.sigma might be float or tensor.
+        return self.model(x, physics.noise_model.sigma)
+
 # --- Model Factory ---
 def get_model(model_name, device):
     # Common args
@@ -85,18 +99,20 @@ def get_model(model_name, device):
     # Note: DeepInv models differ in init signature.
     
     if model_name == 'drunet':
-        return dinv.models.DRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
+        model = dinv.models.DRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
     elif model_name == 'gsdrunet':
-        return dinv.models.GSDRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
+        model = dinv.models.GSDRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
     elif model_name == 'scunet':
-        return dinv.models.SCUNet(in_channels=1, pretrained='download', device=device)
+        model = dinv.models.SCUNet(in_channels=1, pretrained='download', device=device)
     elif model_name == 'restormer':
-        return dinv.models.Restormer(in_channels=1, out_channels=1, pretrained='download', device=device)
+        model = dinv.models.Restormer(in_channels=1, out_channels=1, pretrained='download', device=device)
     elif model_name == 'ram':
         # Check RAM signature. Usually accepts in_channels.
-        return dinv.models.RAM(in_channels=1, out_channels=1, pretrained='download', device=device)
+        model = dinv.models.RAM(in_channels=1, out_channels=1, pretrained='download', device=device)
     else:
         raise ValueError(f"Unknown model: {model_name}")
+        
+    return DenoiserWrapper(model)
 
 # --- Main Training Function ---
 def train_v2(args):
