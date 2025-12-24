@@ -80,39 +80,67 @@ class RandomRot90:
 
 # --- Wrapper for Physics-aware Models ---
 class DenoiserWrapper(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, model_name):
         super().__init__()
         self.model = model
+        self.model_name = model_name
             
     def forward(self, x, physics, **kwargs):
-        # DRUNet expects (x, sigma)
-        # We extract sigma from physics.noise_model.sigma
-        # Using the first element if it's a tensor batch, or just the value?
-        # DRUNet logic: if sigma is tensor, it uses it.
-        # Physics.noise_model.sigma might be float or tensor.
-        return self.model(x, physics.noise_model.sigma)
+        # Determine if we should use the full model or just the denoiser
+        # For GSDRUNet, training through the gradient step (GSPnP) is unstable/broken in standard loops.
+        # We usually want to train the underlying denoiser.
+        model_to_use = self.model
+        if self.model_name == 'gsdrunet' and self.training:
+            # Extract the internal DRUNet from GSPnP
+            # GSDRUNet is a function that returns a GSPnP(DRUNet)
+            if hasattr(self.model, 'student_grad'):
+                model_to_use = self.model.student_grad # StudentGrad also has a forward(x, sigma)
+        
+        if self.model_name in ['drunet', 'gsdrunet', 'scunet']:
+            # These expect (x, sigma)
+            return model_to_use(x, physics.noise_model.sigma)
+        elif self.model_name == 'restormer':
+            # Restormer forward: (x, sigma=None, **kwargs)
+            return model_to_use(x, sigma=physics.noise_model.sigma)
+        elif self.model_name == 'ram':
+            # RAM forward: (y, physics=None, sigma=None, gain=None)
+            return model_to_use(x, physics=physics)
+        else:
+            return model_to_use(x)
 
 # --- Model Factory ---
 def get_model(model_name, device):
-    # Common args
-    # Pretrained: generic 'download' if supported, else None.
     # Note: DeepInv models differ in init signature.
-    
     if model_name == 'drunet':
         model = dinv.models.DRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
     elif model_name == 'gsdrunet':
         model = dinv.models.GSDRUNet(in_channels=1, out_channels=1, pretrained='download', device=device)
     elif model_name == 'scunet':
-        model = dinv.models.SCUNet(in_channels=1, pretrained='download', device=device)
+        # Default SCUNet download only has 3-channel weights, which fails on 1-channel init.
+        # We use pretrained=None for 1-channel SCUNet.
+        model = dinv.models.SCUNet(in_nc=1, pretrained=None, device=device)
     elif model_name == 'restormer':
-        model = dinv.models.Restormer(in_channels=1, out_channels=1, pretrained='download', device=device)
+        # Restormer uses specific strings for pretrained.
+        model = dinv.models.Restormer(in_channels=1, out_channels=1, pretrained='denoising_gray', device=device)
     elif model_name == 'ram':
-        # Check RAM signature. Usually accepts in_channels.
-        model = dinv.models.RAM(in_channels=1, out_channels=1, pretrained='download', device=device)
+        # RAM uses pretrained=True (boolean)
+        # Note: RAM init has a bug if in_channels is not a list/tuple.
+        # Also, pretrained weights for RAM are strictly for (1,2,3) channels.
+        model = dinv.models.RAM(in_channels=[1], pretrained=False, device=device)
     else:
         raise ValueError(f"Unknown model: {model_name}")
         
-    return DenoiserWrapper(model)
+    return DenoiserWrapper(model, model_name)
+
+# --- Custom Trainer to enable image saving ---
+class TrainerV2(dinv.Trainer):
+    def setup_train(self, **kwargs):
+        super().setup_train(**kwargs)
+        # DeepInv Trainer doesn't set save_folder_im by default in train mode
+        if self.save_path:
+            self.save_folder_im = Path(self.save_path) / "images"
+            self.save_folder_im.mkdir(parents=True, exist_ok=True)
+            print(f"Saving training images to {self.save_folder_im}")
 
 # --- Main Training Function ---
 def train_v2(args):
@@ -167,16 +195,13 @@ def train_v2(args):
     # Scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
-    # Scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    
     # Loss
     if args.loss == 'l1':
         print("Using L1 Loss")
-        loss_fn = nn.L1Loss()
+        loss_fn = dinv.loss.SupLoss(nn.L1Loss())
     elif args.loss == 'l2':
         print("Using MSE Loss")
-        loss_fn = nn.MSELoss()
+        loss_fn = dinv.loss.SupLoss(nn.MSELoss())
     elif args.loss == 'sure':
         print(f"Using SURE Loss (Gaussian approximation for Sigma={args.sigma})")
         loss_fn = dinv.loss.SureGaussianLoss(sigma=args.sigma) 
@@ -184,10 +209,10 @@ def train_v2(args):
         print(f"Using UNSURE Loss (Learnable Sigma, init={args.sigma})")
         loss_fn = dinv.loss.SureGaussianLoss(sigma=args.sigma, unsure=True) 
     else:
-        loss_fn = nn.L1Loss()
+        loss_fn = dinv.loss.SupLoss(nn.L1Loss())
         
     # Trainer
-    trainer = dinv.Trainer(
+    trainer = TrainerV2(
         model=model,
         physics=physics,
         train_dataloader=train_loader,

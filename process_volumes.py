@@ -7,6 +7,7 @@ from pathlib import Path
 from dicom_utils import create_dicom_dataset, normalize_to_uint16
 from pydicom.uid import generate_uid
 import tqdm
+import argparse
 
 def is_2d_acquisition(zooms):
     """
@@ -240,16 +241,33 @@ def process_nifti_file(filepath, output_root):
         print(f"  Saved isotropic dicoms to {target_dir}")
 
 def main():
-    source_dir = Path(r"D:\Diego trabalho\IXI\Test")
-    # "folder above the one where the original files are"
-    # Source: ...\IXI\Test
-    # Parent: ...\IXI
-    # So we output to ...\IXI\<filename>...
-    output_root = source_dir.parent
+    parser = argparse.ArgumentParser(description="Process NIfTI volumes and generate isotropic DICOM slices in 3 planes.")
+    parser.add_argument("--source_dir", type=str, required=True, help="Directory containing .nii or .nii.gz files")
+    parser.add_argument("--output_root", type=str, default=None, help="Root directory for output (defaults to parent of source_dir)")
+    parser.add_argument("--pattern", type=str, default="*.nii*", help="Pattern to match files (e.g., '*T1.nii.gz')")
+    parser.add_argument("--exclude", type=str, default=None, help="Pattern to exclude files (substring check)")
     
-    files = list(source_dir.glob("*.nii")) + list(source_dir.glob("*.nii.gz"))
+    args = parser.parse_args()
     
+    source_dir = Path(args.source_dir)
+    if args.output_root:
+        output_root = Path(args.output_root)
+    else:
+        # "folder above the one where the original files are"
+        output_root = source_dir.parent
+    
+    files = list(source_dir.glob(args.pattern))
+    
+    if args.exclude:
+        files = [f for f in files if args.exclude not in f.name]
+        print(f"Excluded files containing '{args.exclude}'. Remaining: {len(files)}")
+    
+    if not files:
+        print(f"No NIfTI files found in {source_dir}")
+        return
+        
     print(f"Found {len(files)} NIfTI files in {source_dir}")
+    print(f"Output root: {output_root}")
     
     for f in files:
         process_nifti_file(f, output_root)
